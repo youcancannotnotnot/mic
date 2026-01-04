@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <title>AI 直播聽寫機 (自動連線版)</title>
+    <style>
+        body { font-family: "Microsoft JhengHei", sans-serif; background: #222; color: #fff; text-align: center; padding: 50px; }
+        #status { font-size: 24px; margin-bottom: 20px; color: #aaa; }
+        #ws-status { font-size: 16px; margin-bottom: 30px; color: #ff5555; }
+        #result { font-size: 32px; font-weight: bold; color: #0f0; margin: 20px; min-height: 50px; border: 1px dashed #444; padding: 20px; }
+        button { padding: 15px 30px; font-size: 20px; cursor: pointer; border: none; border-radius: 5px; background: #4CAF50; color: white; }
+        button:hover { background: #45a049; }
+        button:disabled { background: #555; cursor: not-allowed; }
+        .recording { color: #ff5555 !important; animation: blink 1s infinite; }
+        @keyframes blink { 50% { opacity: 0.5; } }
+        .connected { color: #4CAF50 !important; }
+    </style>
+</head>
+<body>
+    <h1>🎙️ AI 直播聽寫機</h1>
+    <div id="ws-status">🔴 正在連接 Streamer.bot...</div>
+    <div id="status">準備就緒</div>
+    <div id="result">...</div>
+    <button onclick="toggleRecognition()" id="btn">開始監聽</button>
+
+    <script>
+        // ================= 設定區 =================
+        const wsUrl = "ws://127.0.0.1:8080/";
+        const actionName = "AI_Listener"; 
+        // =========================================
+
+        let recognition;
+        let isRecording = false;
+        let ws;
+
+        // 一開啟網頁立刻連線
+        window.onload = initWebSocket;
+
+        function initWebSocket() {
+            ws = new WebSocket(wsUrl);
+            
+            ws.onopen = () => { 
+                console.log("WebSocket 連線成功"); 
+                document.getElementById('ws-status').innerText = "🟢 已連接 Streamer.bot";
+                document.getElementById('ws-status').classList.add("connected");
+            };
+            
+            ws.onerror = (e) => { 
+                document.getElementById('ws-status').innerText = "🔴 無法連接 (請確認 WebSocket Server 有開)";
+            };
+
+            ws.onclose = () => {
+                document.getElementById('ws-status').innerText = "🔴 連線中斷，3秒後重連...";
+                document.getElementById('ws-status').classList.remove("connected");
+                setTimeout(initWebSocket, 3000); // 斷線自動重連
+            };
+        }
+
+        if ('webkitSpeechRecognition' in window) {
+            recognition = new webkitSpeechRecognition();
+            recognition.continuous = true;
+            recognition.interimResults = false;
+            recognition.lang = 'zh-TW';
+
+            recognition.onstart = function() {
+                isRecording = true;
+                document.getElementById('status').innerText = "🎤 正在聆聽中... (請說話)";
+                document.getElementById('status').classList.add("recording");
+                document.getElementById('btn').innerText = "停止";
+                document.getElementById('btn').style.background = "#f44336";
+            };
+
+            recognition.onend = function() {
+                if (isRecording) recognition.start();
+            };
+
+            recognition.onresult = function(event) {
+                let finalTranscript = '';
+                for (let i = event.resultIndex; i < event.results.length; ++i) {
+                    if (event.results[i].isFinal) {
+                        finalTranscript += event.results[i][0].transcript;
+                    }
+                }
+
+                if (finalTranscript.length > 0) {
+                    document.getElementById('result').innerText = finalTranscript;
+                    console.log("辨識結果:", finalTranscript);
+                    sendToStreamerBot(finalTranscript);
+                }
+            };
+        } else {
+            alert("您的瀏覽器不支援，請用 Chrome/Edge！");
+        }
+
+        function toggleRecognition() {
+            if (isRecording) {
+                isRecording = false;
+                recognition.stop();
+                document.getElementById('status').innerText = "已停止";
+                document.getElementById('status').classList.remove("recording");
+                document.getElementById('btn').innerText = "開始監聽";
+                document.getElementById('btn').style.background = "#4CAF50";
+            } else {
+                recognition.start();
+            }
+        }
+
+        function sendToStreamerBot(text) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                const payload = {
+                    "request": "DoAction",
+                    "action": { "name": actionName },
+                    "args": { "dictationText": text },
+                    "id": "AI_Msg_" + Date.now() // 加個 ID 比較保險
+                };
+                ws.send(JSON.stringify(payload));
+                console.log("已傳送至 Streamer.bot");
+            } else {
+                document.getElementById('result').innerText += " (⚠️傳送失敗: 未連線)";
+                console.error("傳送失敗，WebSocket 未連線");
+            }
+        }
+    </script>
+</body>
+</html>
