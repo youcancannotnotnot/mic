@@ -2,25 +2,59 @@
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
-    <title>AI 直播聽寫機 (自動連線版)</title>
+    <title>AI 直播聽寫機 (長句防爆版)</title>
     <style>
         body { font-family: "Microsoft JhengHei", sans-serif; background: #222; color: #fff; text-align: center; padding: 50px; }
+        
+        /* 狀態列 */
+        #ws-status { font-size: 16px; margin-bottom: 20px; color: #ff5555; }
         #status { font-size: 24px; margin-bottom: 20px; color: #aaa; }
-        #ws-status { font-size: 16px; margin-bottom: 30px; color: #ff5555; }
-        #result { font-size: 32px; font-weight: bold; color: #0f0; margin: 20px; min-height: 50px; border: 1px dashed #444; padding: 20px; }
-        button { padding: 15px 30px; font-size: 20px; cursor: pointer; border: none; border-radius: 5px; background: #4CAF50; color: white; }
+        
+        /* 麥克風選單 */
+        .select-container { margin: 20px 0; }
+        select { padding: 10px; font-size: 16px; border-radius: 5px; border: none; background: #333; color: white; max-width: 400px; }
+
+        /* 結果顯示區 (容器) */
+        .result-box {
+            font-size: 28px; font-weight: bold; margin: 20px auto; min-height: 80px; 
+            border: 2px dashed #444; padding: 20px; width: 80%; border-radius: 10px; 
+            background: #1a1a1a; text-align: left; line-height: 1.5;
+        }
+
+        /* 最終確認的文字 (綠色) */
+        #final_span { color: #0f0; }
+        
+        /* 正在辨識中的文字 (灰色) */
+        #interim_span { color: #888; }
+
+        button { padding: 15px 30px; font-size: 20px; cursor: pointer; border: none; border-radius: 5px; background: #4CAF50; color: white; transition: 0.3s; }
         button:hover { background: #45a049; }
-        button:disabled { background: #555; cursor: not-allowed; }
+        
         .recording { color: #ff5555 !important; animation: blink 1s infinite; }
         @keyframes blink { 50% { opacity: 0.5; } }
         .connected { color: #4CAF50 !important; }
     </style>
 </head>
 <body>
-    <h1>🎙️ AI 直播聽寫機</h1>
+    <h1>🎙️ AI 直播聽寫機 (長句防爆版)</h1>
+    
     <div id="ws-status">🔴 正在連接 Streamer.bot...</div>
+    
+    <div class="select-container">
+        <label for="audioSource">選擇麥克風：</label>
+        <select id="audioSource">
+            <option value="">讀取中...</option>
+        </select>
+        <button onclick="getMicrophones()" style="padding: 5px 10px; font-size: 14px; background: #555;">🔄 重新讀取</button>
+    </div>
+
     <div id="status">準備就緒</div>
-    <div id="result">...</div>
+    
+    <div class="result-box">
+        <span id="final_span">...</span>
+        <span id="interim_span"></span>
+    </div>
+    
     <button onclick="toggleRecognition()" id="btn">開始監聽</button>
 
     <script>
@@ -32,92 +66,133 @@
         let recognition;
         let isRecording = false;
         let ws;
+        const audioSelect = document.querySelector('select#audioSource');
+        const finalSpan = document.getElementById('final_span');
+        const interimSpan = document.getElementById('interim_span');
 
-        // 一開啟網頁立刻連線
-        window.onload = initWebSocket;
+        window.onload = async () => {
+            initWebSocket();
+            await getMicrophones();
+        };
 
         function initWebSocket() {
             ws = new WebSocket(wsUrl);
-            
             ws.onopen = () => { 
-                console.log("WebSocket 連線成功"); 
                 document.getElementById('ws-status').innerText = "🟢 已連接 Streamer.bot";
                 document.getElementById('ws-status').classList.add("connected");
             };
-            
-            ws.onerror = (e) => { 
-                document.getElementById('ws-status').innerText = "🔴 無法連接 (請確認 WebSocket Server 有開)";
-            };
+            ws.onerror = () => document.getElementById('ws-status').innerText = "🔴 無法連接 (請確認 WebSocket Server 有開)";
+            ws.onclose = () => setTimeout(initWebSocket, 3000);
+        }
 
-            ws.onclose = () => {
-                document.getElementById('ws-status').innerText = "🔴 連線中斷，3秒後重連...";
-                document.getElementById('ws-status').classList.remove("connected");
-                setTimeout(initWebSocket, 3000); // 斷線自動重連
-            };
+        async function getMicrophones() {
+            let tempStream = null;
+            try {
+                tempStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const audioDevices = devices.filter(device => device.kind === 'audioinput');
+                
+                audioSelect.innerHTML = ""; 
+                if (audioDevices.length === 0) {
+                     audioSelect.innerHTML = "<option>找不到麥克風</option>";
+                } else {
+                    audioDevices.forEach(device => {
+                        const option = document.createElement('option');
+                        option.value = device.deviceId;
+                        option.text = device.label ? device.label : `麥克風 (${device.deviceId.slice(0, 8)}...)`;
+                        audioSelect.appendChild(option);
+                    });
+                }
+            } catch (err) {
+                console.error("權限錯誤:", err);
+                audioSelect.innerHTML = "<option>⚠️ 請允許麥克風權限</option>";
+            } finally {
+                if (tempStream) tempStream.getTracks().forEach(track => track.stop());
+            }
         }
 
         if ('webkitSpeechRecognition' in window) {
             recognition = new webkitSpeechRecognition();
             recognition.continuous = true;
-            recognition.interimResults = false;
+            
+            // ★★★ 關鍵修改：開啟即時預覽 ★★★
+            // 這樣你可以看到正在講的字 (灰色)，避免講太久不知道斷線
+            recognition.interimResults = true; 
+            
             recognition.lang = 'zh-TW';
 
-            recognition.onstart = function() {
+            recognition.onstart = () => {
                 isRecording = true;
-                document.getElementById('status').innerText = "🎤 正在聆聽中... (請說話)";
+                document.getElementById('status').innerText = "🎤 正在聆聽中...";
                 document.getElementById('status').classList.add("recording");
                 document.getElementById('btn').innerText = "停止";
                 document.getElementById('btn').style.background = "#f44336";
+                interimSpan.innerText = ""; // 清空暫存
             };
 
-            recognition.onend = function() {
-                if (isRecording) recognition.start();
+            recognition.onend = () => {
+                if (isRecording) {
+                    console.log("自動重連...");
+                    recognition.start();
+                } else {
+                    document.getElementById('status').innerText = "已停止";
+                    document.getElementById('status').classList.remove("recording");
+                    document.getElementById('btn').innerText = "開始監聽";
+                    document.getElementById('btn').style.background = "#4CAF50";
+                }
             };
 
-            recognition.onresult = function(event) {
-                let finalTranscript = '';
+            recognition.onresult = (event) => {
+                let interimTranscript = ''; // 暫存 (還沒講完的)
+                let finalTranscript = '';   // 確定 (講完的)
+
                 for (let i = event.resultIndex; i < event.results.length; ++i) {
                     if (event.results[i].isFinal) {
+                        // 這一句講完了！
                         finalTranscript += event.results[i][0].transcript;
+                    } else {
+                        // 這一句還在講...
+                        interimTranscript += event.results[i][0].transcript;
                     }
                 }
 
+                // 更新畫面
                 if (finalTranscript.length > 0) {
-                    document.getElementById('result').innerText = finalTranscript;
-                    console.log("辨識結果:", finalTranscript);
-                    sendToStreamerBot(finalTranscript);
+                    // 1. 顯示綠色字
+                    finalSpan.innerText = finalTranscript;
+                    // 2. 清空灰色字
+                    interimSpan.innerText = "";
+                    
+                    console.log("送出:", finalTranscript);
+                    
+                    // 3. 送出給 Streamer.bot
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({
+                            "request": "DoAction",
+                            "action": { "name": actionName },
+                            "args": { "dictationText": finalTranscript },
+                            "id": "AI_" + Date.now()
+                        }));
+                    }
+                }
+                
+                // 顯示正在講的灰色字
+                if (interimTranscript.length > 0) {
+                    interimSpan.innerText = interimTranscript;
                 }
             };
-        } else {
-            alert("您的瀏覽器不支援，請用 Chrome/Edge！");
         }
 
-        function toggleRecognition() {
+        async function toggleRecognition() {
             if (isRecording) {
                 isRecording = false;
                 recognition.stop();
-                document.getElementById('status').innerText = "已停止";
-                document.getElementById('status').classList.remove("recording");
-                document.getElementById('btn').innerText = "開始監聽";
-                document.getElementById('btn').style.background = "#4CAF50";
             } else {
+                const audioSource = audioSelect.value;
+                if (audioSource) {
+                    try { await navigator.mediaDevices.getUserMedia({ audio: { deviceId: audioSource } }); } catch {}
+                }
                 recognition.start();
-            }
-        }
-
-        function sendToStreamerBot(text) {
-            if (ws && ws.readyState === WebSocket.OPEN) {
-                const payload = {
-                    "request": "DoAction",
-                    "action": { "name": actionName },
-                    "args": { "dictationText": text },
-                    "id": "AI_Msg_" + Date.now() // 加個 ID 比較保險
-                };
-                ws.send(JSON.stringify(payload));
-                console.log("已傳送至 Streamer.bot");
-            } else {
-                document.getElementById('result').innerText += " (⚠️傳送失敗: 未連線)";
-                console.error("傳送失敗，WebSocket 未連線");
             }
         }
     </script>
